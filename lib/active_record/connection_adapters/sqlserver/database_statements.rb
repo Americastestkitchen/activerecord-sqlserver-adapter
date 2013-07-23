@@ -2,35 +2,45 @@ module ActiveRecord
   module ConnectionAdapters
     module Sqlserver
       module DatabaseStatements
-        
+
         include CoreExt::DatabaseStatements
-        
+
         def select_rows(sql, name = nil)
           raw_select sql, name, [], :fetch => :rows
         end
 
         def execute(sql, name = nil)
-          if id_insert_table_name = query_requires_identity_insert?(sql)
-            with_identity_insert_enabled(id_insert_table_name) { do_execute(sql,name) }
-          else
-            do_execute(sql,name)
+          begin
+            if id_insert_table_name = query_requires_identity_insert?(sql)
+              with_identity_insert_enabled(id_insert_table_name) { do_execute(sql,name) }
+            else
+              do_execute(sql,name)
+            end
+          rescue Exception => e
+            puts "ERROR: #{e.inspect} RETRYING IN 10..."
+            sleep(10)
+            retry
           end
         end
-        
+
         def exec_query(sql, name = 'SQL', binds = [], sqlserver_options = {})
-          # This is so no id is tried to be updated
-          sql.gsub! /, \[id\] = @[0-9]*/, '' if sql =~ /UPDATE/ && sql =~ /, \[id\] = /
-          if id_insert_table_name = sqlserver_options[:insert] ? query_requires_identity_insert?(sql) : nil
-            with_identity_insert_enabled(id_insert_table_name) { do_exec_query(sql, name, binds) }
-          else
-            do_exec_query(sql, name, binds)
+          begin
+            if id_insert_table_name = sqlserver_options[:insert] ? query_requires_identity_insert?(sql) : nil
+              with_identity_insert_enabled(id_insert_table_name) { do_exec_query(sql, name, binds) }
+            else
+              do_exec_query(sql, name, binds)
+            end
+          rescue Exception => e
+            puts "ERROR: #{e.inspect} RETRYING IN 10..."
+            sleep(10)
+            retry
           end
         end
-        
+
         def exec_insert(sql, name, binds, pk = nil, sequence_name = nil)
           exec_query sql, name, binds, :insert => true
         end
-        
+
         def exec_delete(sql, name, binds)
           sql << "; SELECT @@ROWCOUNT AS AffectedRows"
           super.rows.first.first
@@ -44,7 +54,7 @@ module ActiveRecord
         def outside_transaction?
           select_value('SELECT @@TRANCOUNT', 'SCHEMA') == 0
         end
-        
+
         def supports_statement_cache?
           true
         end
@@ -91,9 +101,9 @@ module ActiveRecord
         def case_sensitive_modifier(node)
           node.acts_like?(:string) ? Arel::Nodes::Bin.new(node) : node
         end
-        
+
         # === SQLServer Specific ======================================== #
-        
+
         def execute_procedure(proc_name, *variables)
           vars = if variables.any? && variables.first.is_a?(Hash)
                    variables.first.map { |k,v| "@#{k} = #{quote(v)}" }
@@ -128,13 +138,13 @@ module ActiveRecord
             end
           end
         end
-        
+
         def use_database(database=nil)
           return if sqlserver_azure?
           database ||= @connection_options[:database]
           do_execute "USE #{quote_table_name(database)}" unless database.blank?
         end
-        
+
         def user_options
           return {} if sqlserver_azure?
           select_rows("dbcc useroptions",'SCHEMA').inject(HashWithIndifferentAccess.new) do |values,row|
@@ -146,7 +156,7 @@ module ActiveRecord
             values
           end
         end
-        
+
         def user_options_dateformat
           if sqlserver_azure?
             select_value 'SELECT [dateformat] FROM [sys].[syslanguages] WHERE [langid] = @@LANGID', 'SCHEMA'
@@ -154,24 +164,24 @@ module ActiveRecord
             user_options['dateformat']
           end
         end
-        
+
         def user_options_isolation_level
           if sqlserver_azure?
-            sql = %|SELECT CASE [transaction_isolation_level] 
+            sql = %|SELECT CASE [transaction_isolation_level]
                     WHEN 0 THEN NULL
-                    WHEN 1 THEN 'READ UNCOMITTED' 
-                    WHEN 2 THEN 'READ COMITTED' 
-                    WHEN 3 THEN 'REPEATABLE READ' 
-                    WHEN 4 THEN 'SERIALIZABLE' 
-                    WHEN 5 THEN 'SNAPSHOT' END AS [isolation_level] 
-                    FROM [sys].[dm_exec_sessions] 
+                    WHEN 1 THEN 'READ UNCOMITTED'
+                    WHEN 2 THEN 'READ COMITTED'
+                    WHEN 3 THEN 'REPEATABLE READ'
+                    WHEN 4 THEN 'SERIALIZABLE'
+                    WHEN 5 THEN 'SNAPSHOT' END AS [isolation_level]
+                    FROM [sys].[dm_exec_sessions]
                     WHERE [session_id] = @@SPID|.squish
             select_value sql, 'SCHEMA'
           else
             user_options['isolation_level']
           end
         end
-        
+
         def user_options_language
           if sqlserver_azure?
             select_value 'SELECT @@LANGUAGE AS [language]', 'SCHEMA'
@@ -185,20 +195,20 @@ module ActiveRecord
           initial_isolation_level = user_options_isolation_level || "READ COMMITTED"
           do_execute "SET TRANSACTION ISOLATION LEVEL #{isolation_level}"
           begin
-            yield 
+            yield
           ensure
             do_execute "SET TRANSACTION ISOLATION LEVEL #{initial_isolation_level}"
           end if block_given?
         end
-        
+
         def newid_function
           select_value "SELECT NEWID()"
         end
-        
+
         def newsequentialid_function
           select_value "SELECT NEWSEQUENTIALID()"
         end
-        
+
         def activity_stats
           select_all %|
             SELECT
@@ -243,9 +253,9 @@ module ActiveRecord
             WHERE db_name(r.database_id) = '#{current_database}'
             ORDER BY s.session_id|
         end
-        
+
         # === SQLServer Specific (Rake/Test Helpers) ==================== #
-        
+
         def recreate_database
           remove_database_connections_and_rollback do
             do_execute "EXEC sp_MSforeachtable 'DROP TABLE ?'"
@@ -289,18 +299,18 @@ module ActiveRecord
         def current_database
           select_value 'SELECT DB_NAME()'
         end
-        
+
         def charset
           select_value "SELECT SERVERPROPERTY('SqlCharSetName')"
         end
-        
-        
+
+
         protected
-        
+
         def select(sql, name = nil, binds = [])
           exec_query(sql, name, binds)
         end
-        
+
         def sql_for_insert(sql, pk, id_value, sequence_name, binds)
           sql = "#{sql}; SELECT CAST(SCOPE_IDENTITY() AS bigint) AS Ident"# unless binds.empty?
           super
@@ -309,13 +319,13 @@ module ActiveRecord
         def last_inserted_id(result)
           super || select_value("SELECT CAST(SCOPE_IDENTITY() AS bigint) AS Ident")
         end
-        
+
         # === SQLServer Specific ======================================== #
-        
+
         def valid_isolation_levels
           ["READ COMMITTED", "READ UNCOMMITTED", "REPEATABLE READ", "SERIALIZABLE", "SNAPSHOT"]
         end
-        
+
         # === SQLServer Specific (Executing) ============================ #
 
         def do_execute(sql, name = 'SQL')
@@ -323,7 +333,7 @@ module ActiveRecord
             with_sqlserver_error_handling { raw_connection_do(sql) }
           end
         end
-        
+
         def do_exec_query(sql, name, binds)
           explaining = name == 'EXPLAIN'
           names_and_types = []
@@ -357,7 +367,7 @@ module ActiveRecord
           end
           raw_select sql, name, binds, :ar_result => true
         end
-        
+
         def raw_connection_do(sql)
           case @connection_options[:mode]
           when :dblib
@@ -368,13 +378,13 @@ module ActiveRecord
         ensure
           @update_sql = false
         end
-        
+
         # === SQLServer Specific (Selecting) ============================ #
 
         def raw_select(sql, name='SQL', binds=[], options={})
           log(sql,name,binds) { _raw_select(sql, options) }
         end
-        
+
         def _raw_select(sql, options={})
           begin
             handle = raw_connection_run(sql)
@@ -383,7 +393,7 @@ module ActiveRecord
             finish_statement_handle(handle)
           end
         end
-        
+
         def raw_connection_run(sql)
           with_sqlserver_error_handling do
             case @connection_options[:mode]
@@ -394,7 +404,7 @@ module ActiveRecord
             end
           end
         end
-        
+
         def handle_more_results?(handle)
           case @connection_options[:mode]
           when :dblib
@@ -402,7 +412,7 @@ module ActiveRecord
             handle.more_results
           end
         end
-        
+
         def handle_to_names_and_values(handle, options={})
           case @connection_options[:mode]
           when :dblib
@@ -411,7 +421,7 @@ module ActiveRecord
             handle_to_names_and_values_odbc(handle, options)
           end
         end
-        
+
         def handle_to_names_and_values_dblib(handle, options={})
           query_options = {}.tap do |qo|
             qo[:timezone] = ActiveRecord::Base.default_timezone || :utc
@@ -421,7 +431,7 @@ module ActiveRecord
           columns = lowercase_schema_reflection ? handle.fields.map { |c| c.downcase } : handle.fields
           options[:ar_result] ? ActiveRecord::Result.new(columns, results) : results
         end
-        
+
         def handle_to_names_and_values_odbc(handle, options={})
           @connection.use_utc = ActiveRecord::Base.default_timezone == :utc
           if options[:ar_result]
@@ -437,7 +447,7 @@ module ActiveRecord
             end
           end
         end
-        
+
         def finish_statement_handle(handle)
           case @connection_options[:mode]
           when :dblib
@@ -447,7 +457,7 @@ module ActiveRecord
           end
           handle
         end
-        
+
       end
     end
   end
