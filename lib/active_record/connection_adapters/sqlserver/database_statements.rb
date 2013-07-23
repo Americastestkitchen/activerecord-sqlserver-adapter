@@ -10,18 +10,30 @@ module ActiveRecord
         end
 
         def execute(sql, name = nil)
-          if id_insert_table_name = query_requires_identity_insert?(sql)
-            with_identity_insert_enabled(id_insert_table_name) { do_execute(sql,name) }
-          else
-            do_execute(sql,name)
+          begin
+            if id_insert_table_name = query_requires_identity_insert?(sql)
+              with_identity_insert_enabled(id_insert_table_name) { do_execute(sql,name) }
+            else
+              do_execute(sql,name)
+            end
+          rescue Exception => e
+            puts "ERROR: #{e.inspect} RETRYING IN 10..."
+            sleep(10)
+            retry
           end
         end
 
         def exec_query(sql, name = 'SQL', binds = [], sqlserver_options = {})
-          if id_insert_table_name = sqlserver_options[:insert] ? query_requires_identity_insert?(sql) : nil
-            with_identity_insert_enabled(id_insert_table_name) { do_exec_query(sql, name, binds) }
-          else
-            do_exec_query(sql, name, binds)
+          begin
+            if id_insert_table_name = sqlserver_options[:insert] ? query_requires_identity_insert?(sql) : nil
+              with_identity_insert_enabled(id_insert_table_name) { do_exec_query(sql, name, binds) }
+            else
+              do_exec_query(sql, name, binds)
+            end
+          rescue Exception => e
+            puts "ERROR: #{e.inspect} RETRYING IN 10..."
+            sleep(10)
+            retry
           end
         end
 
